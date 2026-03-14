@@ -1,15 +1,30 @@
 #!/usr/bin/env sh
 
-## // imgbb.sh // ConzZah // 3/12/26 10:30 AM // ##
+## // imgbb.sh // ConzZah // 3/14/26 2:40 AM // ##
+
+_help () {
+printf '\n%s\n\n' "
+/// imgbb.sh // ConzZah // 2026 ///
+
+USAGE:
+
+sh imgbb.sh [OPTION] [FILENAMES]
+
+OPTIONS:
+
+login    login to imgbb account
+
+help     show help
+";}
+[ -z "$1" ] && _help && exit
 
 init () {
+fc="0"
 mode=""
-suffix=""
-filename=""
+filenames=""
 auth_token=""
-content_type=""
-cdback="$(pwd)"
 deps="curl grep xxd sed tr"
+cdback="$(cd "$(dirname "$0")" && pwd)"
 ua="User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0"
 
 ## quick depcheck
@@ -18,37 +33,32 @@ for dep in $deps; do
 printf '\n%s\n\n' "---> ERROR: $dep MISSING" && exit 1
 done
 
-## enable anon mode when requested
+## process args
+until [ "$#" = '0' ]; do
 case $1 in
-'a'|'anon'|'--anon') mode="anon"; shift
+
+## login
+'login'|'--login') _login;;
+
+## help
+'h'|'-h'|'help'|'--help') help; exit ;;
+
+## anon-mode
+'a'|'-a'|'anon'|'--anon') mode="anon"; shift
 [ -f "/run/user/1000/.cookie" ] && rm -f "/run/user/1000/.cookie" >/dev/null
 curl -sLo '/run/user/1000/.cookie' 'https://gist.github.com/ConzZah/db3037f077110779634f452d05623c3e/raw/imgbb.txt' || exit 1 ;;
-*) :;;
-esac
 
-## check for imgbb cookie and run _login if none is found
-[ "$mode" != "anon" ] && {
-[ ! -f '.cookie' ] || [ -f '.cookie' ] && { ! grep -q 'LID' '.cookie' >/dev/null ;} && _login
-[ -f '.cookie' ] && cp -f '.cookie' '/run/user/1000/.cookie' >/dev/null 2>&1
-}
-
-## ensure that "$1" exists & is a file
-[ -z "$1" ] || [ ! -f "$1" ] && printf '\n%s\n\n' '--> ERROR: PLS ENTER A VALID PATH TO A FILE.' && exit 1
-[ -n "$1" ] && [ -f "$1" ] && filename="$1"
-
+## file processing
+*) [ -f "$1" ] && {
+suffix=""; filename=""; filename="$1"
 ## if the file is not in the directory that we're currently in,
 ## cd to that directory and obtain the 'actual' $filename
 printf '%s' "$filename"| grep -q '/' && {
 cd "$(printf '%s' "$filename"| rev| cut -d '/' -f 2-| rev)" || exit 1
-filename="$(printf '%s' "$filename"| rev| cut -d '/' -f 1| rev)"
-}
+filename="$(printf '%s' "$filename"| rev| cut -d '/' -f 1| rev)" ;}
 
-## check if file doesn't exceed the max filesize (32mb)
-[ "$(stat -c %s "$filename")" -gt "32000000" ] && printf '\n%s\n\n' '--> ERROR: FILE TOO LARGE' && exit 1
-
-## copy our file to /run/user/1000 (basically to ram) and cd.
-cp -f "$filename" "/run/user/1000/$filename" >/dev/null 2>&1 && \
-cd "/run/user/1000/" || exit 1
+## check if $filename doesn't exceed the max filesize (32mb)
+[ "$(stat -c %s "$filename")" -gt "32000000" ] && printf '\n%s\n\n' "--> ERROR: FILE: $filename IS TOO LARGE" && exit 1
 
 ## check if file is actually an image file
 suf="$(printf '%s' "$filename"| rev| cut -d '.' -f 1| rev)"
@@ -58,24 +68,55 @@ for s in $sufs; do
 done
 
 ## if $suffix should still be empty, exit
-[ -z "$suffix" ] && printf '\n%s\n\n' '--> ERROR: INVALID FILE TYPE' && exit 1
+[ -z "$suffix" ] && printf '\n%s\n\n' "--> ERROR: INVALID FILE TYPE FOR: $filename" && exit 1
 
-## if still alive, set content type
-content_type="image/${suffix}"
+## copy our file to /run/user/1000 (basically to ram)
+cp -f "$filename" "/run/user/1000/$filename" >/dev/null 2>&1
+cd "$cdback" || exit 1
+
+## add to filenames & increment $fc
+filenames="$filename $filenames"
+fc="$((fc + 1))" ;}
+
+## if input is not a file, show _help & exit
+[ ! -f "$1" ] && _help && exit
+shift ;;
+esac
+done
+
+## check for imgbb cookie and run _login if none is found
+[ "$mode" != "anon" ] && {
+[ ! -f '.cookie' ] && _login
+[ -f '.cookie' ] && { ! grep -q 'LID' '.cookie' ;} && _login
+[ -f '.cookie' ] && cp -f '.cookie' '/run/user/1000/.cookie' >/dev/null 2>&1 ;}
 }
 
 main () {
+## cd to /run/user/1000/
+cd "/run/user/1000/" || exit 1
+## run until all filenames are processed 
+until [ "$fc" = "0" ]; do
+for filename in $filenames; do
 gen_geckoformboundary
 gen_auth_token
 prep_form
 upload
+fc="$((fc - 1))"
+done
+done
+rm -f '.cookie'
+cd "$cdback" || exit 1; exit
 }
+
+gen_geckoformboundary () { geckoformboundary="----geckoformboundary$(xxd -p -l 16 /dev/urandom| tr -d '\n')" ;}
+
+gen_auth_token () { auth_token="$(curl -s -b '.cookie' -c '.cookie' 'https://imgbb.com/' -H "$ua" -H 'Connection: keep-alive'| grep -o 'PF.obj.config.auth_token.*'| cut -d '"' -f 2)" ;}
 
 prep_form () {
 ## write skeleton
 printf '%s\n' "--${geckoformboundary}
 Content-Disposition: form-data; name=\"source\"; filename=\"$filename\"
-Content-Type: $content_type
+Content-Type: image/$(printf '%s' "$filename"| rev| cut -d '.' -f 1| rev)
 " > '.skeleton-p1'
 
 printf '%s' "
@@ -101,10 +142,6 @@ $auth_token
 cat ".skeleton-p1" "$filename" ".skeleton-p2" > '.upload'
 }
 
-gen_auth_token () { auth_token="$(curl -s -b '.cookie' -c '.cookie' 'https://imgbb.com/login' -H "$ua" -H 'Connection: keep-alive'| grep -o 'PF.obj.config.auth_token.*'| cut -d '"' -f 2)" ;}
-
-gen_geckoformboundary () { geckoformboundary="----geckoformboundary$(xxd -p -l 16 /dev/urandom| tr -d '\n')" ;}
-
 upload () {
 curl -b '.cookie' 'https://imgbb.com/json' \
   --compressed \
@@ -128,21 +165,20 @@ curl -b '.cookie' 'https://imgbb.com/json' \
   --data-binary @'.upload'| sed 's#\\##g'| tr ',' '\n'
 
 ## note that we don't kill the original files, merely the ones in /run/user/1000
-rm -f '.skeleton-p1' '.skeleton-p2' '.upload' '.cookie' "$filename" >/dev/null
-cd "$cdback" || exit 1; exit
+rm -f '.skeleton-p1' '.skeleton-p2' '.upload' "$filename" >/dev/null
 }
 
 _login () {
 ## basic auth to obtain '.cookie'
-printf '\n%s\n' '--> COULD NOT FIND IMGBB COOKIE, STARTING LOGIN'
+printf '\n%s\n' '--> LOGIN'
 [ -f '.cookie' ] && rm -f '.cookie'
 mail=""; pass=""
 gen_auth_token
 
-printf '\n%s' 'MAIL --> '
+printf '\n%s' '--> MAIL: '
 read -r mail
 
-printf '\n%s' 'PASS --> '
+printf '\n%s' '--> PASS: '
 read -r pass
 
 curl -sb '.cookie' -c '.cookie' 'https://imgbb.com/login' \
@@ -167,9 +203,8 @@ curl -sb '.cookie' -c '.cookie' 'https://imgbb.com/login' \
   -H 'TE: trailers' \
   --data-urlencode "auth_token=${auth_token}" --data-urlencode "login-subject=${mail}" --data-urlencode "password=${pass}"
 
-## check if we actually obtained 'LID' and go back to init, else exit
-! grep -q 'LID' '.cookie' && printf '\n%s\n\n' '--> LOGIN FAILED' && exit 1 || printf '\n%s\n\n' '--> LOGIN SUCCESSFUL' && init "$args"
+## check if we actually obtained 'LID' & exit 0 if we do, else exit 1
+! grep -q 'LID' '.cookie' && printf '\n%s\n\n' '--> LOGIN FAILED' && exit 1 || printf '\n%s\n\n' '--> LOGIN SUCCESSFUL' && exit 0
 }
 
-args="$*"
-init "$@" && main
+init "$@"; main
